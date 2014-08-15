@@ -4,6 +4,7 @@
 in every line of log message from rsyslog, then send statistics
 results to zabbix server via calling zabbix_sender command line tool
 """
+
 import sys
 import ConfigParser
 import re
@@ -15,47 +16,36 @@ import subprocess
 import functools
 import copy
 import os
+import time
 
+RESULTS_FILE = '/var/results.out'
+CONFIG_FILE = '/etc/logconf.ini'
 copy_lock = threading.Lock()
+tmpdict = {}
+tmplist = []
+
 def getip(ifname):
     socket_ip = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     return socket.inet_ntoa(fcntl.ioctl(socket_ip.fileno(), 0x8915, \
             struct.pack('256s', ifname[:15]))[20:24])
 
-def sender(tmpdict):
-    global thread_t
-    thread_t = threading.Timer(time_interval, sender)
-    thread_t.start()
+def sender(tmpdict, time_interval):
+    while True:
+        time.sleep(time_interval)
 
-    if copy_lock.acquire(1):
-        dict_n = copy.deepcopy(tmpdict)
-        for i in tmpdict:
-            tmpdict[i] = 0
-        copy_lock.release()
+        if copy_lock.acquire(1):
+            dict_n = copy.deepcopy(tmpdict)
+            for i in tmpdict:
+                tmpdict[i] = 0
+            copy_lock.release()
 
-    ip_addr = getip("eth0")
-    # write count results into local file
-    try:
-        fileopen = open("/usr/home/shixi_jiangen/results.out", 'w')
-    except Exception as err:
-        sys.stderr.write("Error to make a file to write with results: \
-                %s\n" % err)
-        return err
+        write_file()
 
-    for i in dict_n:
-        count = str(dict_n[i])
-        element = ip_addr + ' ' + i + ' ' + count + '\n'
-        fileopen.write(element)
-    fileopen.close()
+        # system call zabbix_sender to send data
+        subprocess.call(zabbix_cmd, shell=True)
 
-    # system call zabbix_sender to send data
-    subprocess.call('zabbix_sender -i results.out -z 127.0.0.1 -vv', \
-            shell=True)
-
-def get_list(config_file):
-    # read configuration file
-    conf = ConfigParser.ConfigParser()
-    conf.read(config_file)
+def get_list():
+    global conf
 
     # get configuration details and store into a list
     tmplist = []
@@ -79,34 +69,66 @@ def get_dict(tmplist):
         tmpdict[inf] = 0
     return tmpdict
 
-if __name__ == '__main__':
-    # get count interval
-    conf = ConfigParser.ConfigParser()
-    conf.read("/usr/home/shixi_jiangen/logconf.ini")
+def count_key(line):
+    re_match = re.match(regex, line)
+    if re_match is None:
+        sys.stderr.write("Unable to parse log message: " + \
+                "\n%s\n" % line)
+        return
 
-    time_interval = conf.getint("main", "time_interval")
-    regex = conf.get("template", "re")
+    for tmptuple in tmplist:
+        pp = tmptuple[0] + '_' + tmptuple[1]
+        if re_match.group(1) == tmptuple[0]:
+            if (re_match.group(2)).find(tmptuple[1]) >= 0:
+                tmpdict[pp] += 1
 
-    tmplist = get_list("/usr/home/shixi_jiangen/logconf.ini")
-    tmpdict = get_dict(tmplist)
+def write_file():
+    # write count results into local file
+    try:
+        fileopen = open(RESULTS_FILE, 'w')
+    except Exception as err:
+        sys.stderr.write("Error to make a file to write with results: \
+                %s\n" % err)
 
-    sender = functools.partial(sender, tmpdict)
-    thread_t = threading.Timer(time_interval, sender)
-    thread_t.start()
+    for i in tmpdict:
+        count = str(tmpdict[i])
+        element = IP_ADDR + ' ' + i + ' ' + count + '\n'
+        fileopen.write(element)
+    fileopen.close()
 
+conf = ConfigParser.ConfigParser()
+conf.read(CONFIG_FILE)
+
+time_interval = conf.getint("main", "time_interval")
+regex = conf.get("template", "re")
+zabbix_cmd = conf.get("main", "zabbix_sender")
+ifname = conf.get("main", "ifname")
+debug = conf.get("main", "debug")
+test_file = conf.get("main", "test_log")
+
+tmplist = get_list()
+tmpdict = get_dict(tmplist)
+IP_ADDR = getip(ifname)
+
+file = conf.get("main", "results_file")
+if file:
+    RESULTS_FILE = file
+
+# if debug is true, execute the test
+if debug == 'True' or debug == 'true':
+    fh = open(test_file, 'rb')
+    data = fh.readlines()
+    for line in data:
+        count_key(line)
+    write_file()
+    subprocess.call(zabbix_cmd, shell=True)
+else:
+    t = threading.Thread(target=sender(tmpdict, time_interval))
+    t.start()
     while 1:
         line = sys.stdin.readline()
         if not line:
+            subprocess.call(zabbix_cmd, shell=True)
             os._exit(0)
-
-        re_match = re.match(regex, line)
-        if re_match is None:
-            sys.stderr.write("Unable to parse log message - " + \
-                    "\n%s\n" % line)
-            continue
-
-        for tmptuple in tmplist:
-            pp = tmptuple[0] + '_' + tmptuple[1]
-            if re_match.group(1) == tmptuple[0]:
-                if (re_match.group(2)).find(tmptuple[1]) >= 0:
-                    tmpdict[pp] += 1
+        write_file()
+        count_key(line)
