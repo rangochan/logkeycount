@@ -20,34 +20,31 @@ import time
 
 RESULTS_FILE = '/var/results.out'
 CONFIG_FILE = '/etc/logconf.ini'
-copy_lock = threading.Lock()
 tmpdict = {}
 tmplist = []
 
 def getip(ifname):
+    '''get local ip address depending on the specified interface'''
     socket_ip = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     return socket.inet_ntoa(fcntl.ioctl(socket_ip.fileno(), 0x8915, \
             struct.pack('256s', ifname[:15]))[20:24])
 
 def sender(tmpdict, time_interval):
+    '''send results to zabbix server every time_interval seconds'''
     while True:
         time.sleep(time_interval)
-
-        if copy_lock.acquire(1):
-            dict_n = copy.deepcopy(tmpdict)
-            for i in tmpdict:
-                tmpdict[i] = 0
-            copy_lock.release()
-
-        write_file()
+        dict_n = copy.deepcopy(tmpdict)
+        for i in tmpdict:
+            tmpdict[i] = 0
+        write_file(dict_n)
 
         # system call zabbix_sender to send data
         subprocess.call(zabbix_cmd, shell=True)
 
 def get_list():
+    
+    '''get configuration details and store into a list'''
     global conf
-
-    # get configuration details and store into a list
     tmplist = []
     sections = conf.sections()
     for section in sections:
@@ -62,7 +59,7 @@ def get_list():
     return tmplist
 
 def get_dict(tmplist):
-    # init a dict used to store results
+    '''init a dict used to store results'''
     tmpdict = {}
     for i in range(len(tmplist)):
         inf = tmplist[i][0] + '_' + tmplist[i][1]
@@ -75,15 +72,17 @@ def count_key(line):
         sys.stderr.write("Unable to parse log message: " + \
                 "\n%s\n" % line)
         return
-
+    
+    global tmplist
+    global tmpdict
     for tmptuple in tmplist:
         pp = tmptuple[0] + '_' + tmptuple[1]
         if re_match.group(1) == tmptuple[0]:
             if (re_match.group(2)).find(tmptuple[1]) >= 0:
                 tmpdict[pp] += 1
 
-def write_file():
-    # write count results into local file
+def write_file(tmpdict):
+    '''write count results into local file'''
     try:
         fileopen = open(RESULTS_FILE, 'w')
     except Exception as err:
@@ -114,13 +113,13 @@ file = conf.get("main", "results_file")
 if file:
     RESULTS_FILE = file
 
-# if debug is true, execute the test
+# if debug is true, execute the test, otherwise execute as normal
 if debug == 'True' or debug == 'true':
     fh = open(test_file, 'rb')
     data = fh.readlines()
     for line in data:
         count_key(line)
-    write_file()
+    write_file(tmpdict)
     subprocess.call(zabbix_cmd, shell=True)
 else:
     t = threading.Thread(target=sender(tmpdict, time_interval))
@@ -130,5 +129,4 @@ else:
         if not line:
             subprocess.call(zabbix_cmd, shell=True)
             os._exit(0)
-        write_file()
         count_key(line)
