@@ -13,7 +13,6 @@ import socket
 import fcntl
 import struct
 import subprocess
-import functools
 import copy
 import os
 import time
@@ -42,7 +41,6 @@ def sender(tmpdict, time_interval):
         subprocess.call(zabbix_cmd, shell=True)
 
 def get_list():
-    
     '''get configuration details and store into a list'''
     global conf
     tmplist = []
